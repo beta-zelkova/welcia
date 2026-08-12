@@ -370,7 +370,6 @@
 
             .time-box .arrow {
                 display: none;
-                /* スマホ画面の入力時は折り返すため非表示 */
             }
         }
 
@@ -562,7 +561,7 @@
                     <input type="text" id="inName" placeholder="山田 太郎">
                 </div>
                 <div class="field">
-                    <label>対象月度</label>
+                    <label>対象月度（例：8月度＝7/11〜8/10）</label>
                     <input type="month" id="inMonth">
                 </div>
                 <div class="field" style="max-width:220px;">
@@ -593,8 +592,9 @@
             <div class="btnrow">
                 <button class="primary" onclick="buildCalendar()">カレンダーを作成</button>
                 <button class="ghost" onclick="clearAll()">入力内容をクリア</button>
-                <button class="ghost" onclick="window.print()">PDF保存/印刷</button>
-                <button class="ghost" onclick="saveAsImage()">画像保存</button>
+                <button class="ghost" onclick="window.print()">PDFとして保存 / 印刷</button>
+                <button class="ghost" onclick="saveAsImage()">画像保存 / LINE共有</button>
+                <button class="ghost" onclick="downloadICS()">カレンダー連携（.ics出力）</button>
             </div>
         </div>
 
@@ -765,8 +765,8 @@
             const end = document.getElementById('defEnd');
             start.innerHTML = hourOptions();
             end.innerHTML = hourOptions();
-            start.value = 19;
-            end.value = 24;
+            start.value = 9;
+            end.value = 18;
         }
 
         function toggleStatus(id, type, checkbox) {
@@ -846,6 +846,7 @@
             document.getElementById('inMonth').value = `${y}-${m}`;
         }
 
+        // 画像保存・共有処理（Web Share API 対応）
         async function saveAsImage() {
             document.body.classList.add('export-mode');
             const target = document.getElementById('sheet');
@@ -857,17 +858,111 @@
                     backgroundColor: "#ffffff",
                 });
 
-                const link = document.createElement('a');
                 const nameStr = document.getElementById('inName').value || '未記名';
-                link.download = `希望休申請書_${nameStr}.png`;
-                link.href = canvas.toDataURL('image/png');
-                link.click();
+                const fileName = `希望休申請書_${nameStr}.png`;
+
+                canvas.toBlob(async (blob) => {
+                    const file = new File([blob], fileName, { type: 'image/png' });
+
+                    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                        try {
+                            await navigator.share({
+                                files: [file],
+                                title: '希望休申請書',
+                                text: `${nameStr}の希望休申請書です。`,
+                            });
+                        } catch (shareError) {
+                            if (shareError.name !== 'AbortError') {
+                                console.error("共有エラー:", shareError);
+                            }
+                        }
+                    } else {
+                        const link = document.createElement('a');
+                        link.download = fileName;
+                        link.href = canvas.toDataURL('image/png');
+                        link.click();
+                    }
+                }, 'image/png');
+
             } catch (error) {
-                console.error("画像保存エラー:", error);
-                alert("画像の保存に失敗しました。");
+                console.error("画像生成エラー:", error);
+                alert("画像の生成に失敗しました。");
             } finally {
                 document.body.classList.remove('export-mode');
             }
+        }
+
+        // ICSファイルの生成とダウンロード処理
+        function downloadICS() {
+            const calBody = document.getElementById('calBody');
+            if (!calBody || calBody.innerHTML.includes('対象月度を選択してください')) {
+                alert('先に「カレンダーを作成」を押してください。');
+                return;
+            }
+
+            const monthVal = document.getElementById('inMonth').value;
+            if (!monthVal) return;
+
+            const name = document.getElementById('inName').value || '未記名';
+            let icsContent = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Shift App//JA\r\nCALSCALE:GREGORIAN\r\n";
+
+            const [y, m] = monthVal.split('-').map(Number);
+            const start = new Date(y, m - 2, 11);
+            const end = new Date(y, m - 1, 10);
+
+            let cur = new Date(start);
+            const pad = (n) => String(n).padStart(2, '0');
+            const now = new Date();
+            const dtstamp = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}T${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}Z`;
+
+            let hasEvent = false;
+
+            while (cur <= end) {
+                const id = 'day_' + cur.getFullYear() + '_' + (cur.getMonth() + 1) + '_' + cur.getDate();
+                const workChk = document.getElementById(id + '_chk_work');
+
+                if (workChk && workChk.checked) {
+                    hasEvent = true;
+                    const startHour = document.getElementById(id + '_start').value;
+                    const endHour = document.getElementById(id + '_end').value;
+
+                    const dateStr = `${cur.getFullYear()}${pad(cur.getMonth() + 1)}${pad(cur.getDate())}`;
+                    const dtStart = `${dateStr}T${pad(startHour)}0000`;
+
+                    let endStr = `${dateStr}T${pad(endHour)}0000`;
+                    if (Number(endHour) >= 24) {
+                        const nextDay = new Date(cur);
+                        nextDay.setDate(nextDay.getDate() + 1);
+                        const nextDateStr = `${nextDay.getFullYear()}${pad(nextDay.getMonth() + 1)}${pad(nextDay.getDate())}`;
+                        const nextEndHour = Number(endHour) - 24;
+                        endStr = `${nextDateStr}T${pad(nextEndHour)}0000`;
+                    }
+
+                    icsContent += "BEGIN:VEVENT\r\n";
+                    icsContent += `DTSTAMP:${dtstamp}\r\n`;
+                    icsContent += `UID:${dtstamp}-${id}@shiftapp\r\n`;
+                    icsContent += `DTSTART;TZID=Asia/Tokyo:${dtStart}\r\n`;
+                    icsContent += `DTEND;TZID=Asia/Tokyo:${endStr}\r\n`;
+                    icsContent += `SUMMARY:出勤\r\n`;
+                    icsContent += "END:VEVENT\r\n";
+                }
+                cur.setDate(cur.getDate() + 1);
+            }
+
+            if (!hasEvent) {
+                alert('出勤日が一つも設定されていません。');
+                return;
+            }
+
+            icsContent += "END:VCALENDAR\r\n";
+
+            const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `シフト_${name}.ics`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
         }
 
         window.addEventListener('DOMContentLoaded', () => {
